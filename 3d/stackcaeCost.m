@@ -1,0 +1,105 @@
+function [ cost, grad ] = stackcaeCost(theta, data, labels, hiddenSize, ...
+                                              numClasses, netconfig, lambda)
+                                         
+% stackedAECost: Takes a trained softmaxTheta and a training data set with labels,
+% and returns cost and gradient using a stacked autoencoder model. Used for
+% finetuning.
+                                         
+% theta: trained weights from the autoencoder
+% visibleSize: the number of input units
+% hiddenSize:  the number of hidden units *at the 2nd layer*
+% numClasses:  the number of categories
+% netconfig:   the network configuration of the stack
+% lambda:      the weight regularization penalty
+% data: Our matrix containing the training data as columns.  So, data(:,i) is the i-th training example. 
+% labels: A vector containing labels, where labels(i) is the label for the
+% i-th training example
+
+
+%% Unroll softmaxTheta parameter
+
+% We first extract the part which compute the softmax gradient
+softmaxTheta = reshape(theta(1:hiddenSize*numClasses), numClasses, hiddenSize);
+
+% Extract out the "stack"
+stack = params2stack(theta(hiddenSize*numClasses+1:end), netconfig);
+
+% You will need to compute the following gradients
+softmaxThetaGrad = zeros(size(softmaxTheta));
+stackgrad = cell(size(stack));
+for d = 1:numel(stack)
+    stackgrad{d}.w = zeros(size(stack{d}.w));
+    stackgrad{d}.b = zeros(size(stack{d}.b));
+end
+
+cost = 0; % You need to compute this
+
+% You might find these variables useful
+M = size(data, 4);
+gt_tmp = full(sparse([(1 : numClasses)'; labels], 1:M+numClasses, 1));
+groundTruth = gt_tmp(:, numClasses+1 : end);
+
+
+%% --------------------------- YOUR CODE HERE -----------------------------
+%  Instructions: Compute the cost function and gradient vector for 
+%                the stacked autoencoder.
+%
+%                You are given a stack variable which is a cell-array of
+%                the weights and biases for every layer. In particular, you
+%                can refer to the weights of Layer d, using stack{d}.w and
+%                the biases using stack{d}.b . To get the total number of
+%                layers, you can use numel(stack).
+%
+%                The last layer of the network is connected to the softmax
+%                classification layer, softmaxTheta.
+%
+%                You should compute the gradients for the softmaxTheta,
+%                storing that in softmaxThetaGrad. Similarly, you should
+%                compute the gradients for each layer in the stack, storing
+%                the gradients in stackgrad{d}.w and stackgrad{d}.b
+%                Note that the size of the matrices in stackgrad should
+%                match exactly that of the size of the matrices in stack.
+%
+
+StackFeat = cell(numel(stack) + 1, 1);
+StackFeat{1} = data;%4-D dim
+for d = 1:numel(stack) 
+    Wsize = netconfig.layerInfo{d}.wsize;
+    data = reshape(StackFeat{d}, [netconfig.layerInfo{d}.fd M]);
+    StackFeat{d + 1} = caefeedForward([stack{d}.w(:);stack{d}.b], data, Wsize(1 : 3), ...
+        Wsize(4), netconfig.layerInfo{d}.pd, netconfig.layerInfo{d}.pi, ...
+        netconfig.poolMethod, netconfig.convMethod, 0);%sigmoid(bsxfun(@plus, stack{d}.w * StackFeat{d}, stack{d}.b));
+end
+
+C = bsxfun(@minus,softmaxTheta*StackFeat{d + 1},max(softmaxTheta*StackFeat{d + 1}, [], 1)); 
+C = exp(C);
+p = bsxfun(@rdivide, C, sum(C));
+cost = -1/M * groundTruth(:)' * log(p(:)) + lambda/2 * sum(softmaxTheta(:) .^ 2);
+
+%softmaxThetaGrad = -1/M * (groundTruth - p) * StackFeat{d + 1}' + lambda * softmaxTheta(:);
+
+delta_out = p - groundTruth;
+delta_softmax = softmaxTheta' * delta_out .* StackFeat{d + 1} .* (1 - StackFeat{d + 1});
+softmaxThetaGrad = softmaxThetaGrad + delta_out * StackFeat{d + 1}' / M + lambda * softmaxTheta;
+deltaN = delta_softmax;
+for d = numel(stack) : -1 : 1
+    deltaI = deltaN;
+    deltaN = [];
+    deltaN = stack{d}.w' * deltaI .* StackFeat{d} .* (1 - StackFeat{d});
+    stackgrad{d}.w = stackgrad{d}.w + (deltaI * StackFeat{d}')/ M;
+    stackgrad{d}.b = stackgrad{d}.b + sum(deltaI,  2) / M;
+end
+
+
+% -------------------------------------------------------------------------
+
+%% Roll gradient vector
+grad = [softmaxThetaGrad(:) ; stack2params(stackgrad)];
+
+end
+
+
+% You might find this useful
+function sigm = sigmoid(x)
+    sigm = 1 ./ (1 + exp(-x));
+end
